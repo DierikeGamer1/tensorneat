@@ -12,6 +12,12 @@ class State:
 
     def __getattr__(self, name):
         return self.state_dict[name]
+    
+    def __getstate__(self):
+        return self.state_dict
+
+    def __setstate__(self, state):
+        self.__dict__["state_dict"] = state
 
     def __setattr__(self, name, value):
         raise AttributeError("State is immutable")

@@ -7,17 +7,72 @@ import numpy as np
 from algorithm import BaseAlgorithm
 from problem import BaseProblem
 from utils import State
+import utils
+import pickle
+from datetime import datetime
+import os, json,sys
+
+
+def ReturnListaClosePrice():
+    lista = os.listdir("tensorneat/problem/rl_env/neatdrive/DadosTreino")
+    
+    ListaClosePrice = []
+    for numero, nomearquivo in enumerate(lista):
+        if "adausdt" in nomearquivo:
+            if "adausdt2024-02-20-00-21-41-425423" in nomearquivo:
+                with open(f"tensorneat/problem/rl_env/neatdrive/DadosTreino/{nomearquivo}", "r") as nomearquivo:
+                    Listadados = []
+                    Listadados.append(
+                        [
+                            json.loads(linha.replace("'", '"').replace("+", ""))["data"]
+                            for linha in nomearquivo
+                        ]
+                    )
+                    ListaClosePrice.append(
+                        [
+                            float(objeto["c"])
+                            for objeto in Listadados[len(Listadados) - 1]
+                        ]
+                    )
+                    t_DeInterval = 30000
+                    div = int(
+                        len(ListaClosePrice[len(ListaClosePrice) - 1]) / t_DeInterval
+                    )
+                    cgh = len(ListaClosePrice) - 1
+                    for i in range(1, int(div)):
+                        ListaClosePrice.append(
+                            ListaClosePrice[cgh][
+                                t_DeInterval * i + 1 - t_DeInterval : t_DeInterval * i
+                            ]
+                        )
+
+            else:
+                with open(f"tensorneat/problem/rl_env/neatdrive/DadosTreino/{nomearquivo}", "r") as nomearquivo:
+                    Listadados = []
+                    Listadados.append(
+                        [
+                            json.loads(linha.replace("'", '"').replace("+", ""))["data"]
+                            for linha in nomearquivo
+                        ]
+                    )
+                    ListaClosePrice.append(
+                        [
+                            float(objeto["c"])
+                            for objeto in Listadados[len(Listadados) - 1]
+                        ]
+                    )
+    return ListaClosePrice
 
 
 class Pipeline:
 
     def __init__(
-            self,
-            algorithm: BaseAlgorithm,
-            problem: BaseProblem,
-            seed: int = 42,
-            fitness_target: float = 1,
-            generation_limit: int = 1000,
+        self,
+        algorithm: BaseAlgorithm,
+        problem: BaseProblem,
+        seed: int = 42,
+        fitness_target: float = 1,
+        generation_limit: int = 1000,
     ):
         assert problem.jitable, "Currently, problem must be jitable"
 
@@ -27,12 +82,14 @@ class Pipeline:
         self.fitness_target = fitness_target
         self.generation_limit = generation_limit
         self.pop_size = self.algorithm.pop_size
+        self.ListaClosePrice=ReturnListaClosePrice()
 
         print(self.problem.input_shape, self.problem.output_shape)
 
         # TODO: make each algorithm's input_num and output_num
-        assert algorithm.num_inputs == self.problem.input_shape[-1], \
-            f"algorithm input shape is {algorithm.num_inputs} but problem input shape is {self.problem.input_shape}"
+        assert (
+            algorithm.num_inputs == self.problem.input_shape[-1]
+        ), f"algorithm input shape is {algorithm.num_inputs} but problem input shape is {self.problem.input_shape}"
 
         # self.act_func = self.algorithm.act
 
@@ -40,7 +97,7 @@ class Pipeline:
         #     self.act_func = jax.vmap(self.act_func, in_axes=(None, 0, None))
 
         self.best_genome = None
-        self.best_fitness = float('-inf')
+        self.best_fitness = float("-inf")
         self.generation_timestamp = None
 
     def setup(self):
@@ -62,21 +119,21 @@ class Pipeline:
 
         pop_transformed = jax.vmap(self.algorithm.transform)(pop)
 
-        fitnesses = jax.vmap(self.problem.evaluate, in_axes=(0, None, None, 0))(
-                        keys,
-                        state.pro,
-                        self.algorithm.forward,
-                        pop_transformed
-                    )
+        fitnesses = jax.vmap(self.problem.evaluate, in_axes=(0, None, None, 0,None))(
+            keys, state.pro, self.algorithm.forward, pop_transformed,self.ListaClosePrice
+        )
 
         fitnesses = jnp.where(jnp.isnan(fitnesses), -1e6, fitnesses)
 
         alg_state = self.algorithm.tell(state.alg, fitnesses)
 
-        return state.update(
-            randkey=sub_key,
-            alg=alg_state,
-        ), fitnesses
+        return (
+            state.update(
+                randkey=sub_key,
+                alg=alg_state,
+            ),
+            fitnesses,
+        )
 
     def auto_run(self, ini_state):
         state = ini_state
@@ -108,7 +165,12 @@ class Pipeline:
 
     def analysis(self, state, pop, fitnesses):
 
-        max_f, min_f, mean_f, std_f = max(fitnesses), min(fitnesses), np.mean(fitnesses), np.std(fitnesses)
+        max_f, min_f, mean_f, std_f = (
+            max(fitnesses),
+            min(fitnesses),
+            np.mean(fitnesses),
+            np.std(fitnesses),
+        )
 
         new_timestamp = time.time()
 
@@ -122,10 +184,19 @@ class Pipeline:
         member_count = jax.device_get(self.algorithm.member_count(state.alg))
         species_sizes = [int(i) for i in member_count if i > 0]
 
-        print(f"Generation: {self.algorithm.generation(state.alg)}",
-              f"species: {len(species_sizes)}, {species_sizes}",
-              f"fitness: {max_f:.6f}, {min_f:.6f}, {mean_f:.6f}, {std_f:.6f}, Cost time: {cost_time * 1000:.6f}ms")
+        print(
+            f"Generation: {self.algorithm.generation(state.alg)}",
+            f"species: {len(species_sizes)}, {species_sizes}",
+            f"fitness: {max_f:.6f}, {min_f:.6f}, {mean_f:.6f}, {std_f:.6f}, Cost time: {cost_time * 1000:.6f}ms",
+        )
 
     def show(self, state, best, *args, **kwargs):
         transformed = self.algorithm.transform(best)
-        self.problem.show(state.randkey, state.pro, self.algorithm.forward, transformed, *args, **kwargs)
+        self.problem.show(
+            state.randkey,
+            state.pro,
+            self.algorithm.forward,
+            transformed,
+            *args,
+            **kwargs,
+        )

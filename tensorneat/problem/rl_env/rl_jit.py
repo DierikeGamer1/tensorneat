@@ -1,8 +1,10 @@
 from functools import partial
-
-import jax
-
+import jax.numpy as jnp # type: ignore
+import jax # type: ignore
+import sys
 from .. import BaseProblem
+import problem.rl_env.classeshort as classeshort
+import numpy as np # type: ignore
 
 
 class RLEnv(BaseProblem):
@@ -11,51 +13,80 @@ class RLEnv(BaseProblem):
     # TODO: move output transform to algorithm
     def __init__(self):
         super().__init__()
+        
 
-    def evaluate(self, randkey, state, act_func, params):
-        rng_reset, rng_episode = jax.random.split(randkey)
-        init_obs, init_env_state = self.reset(rng_reset)
+    def VerificarFinals(Final, indice, ListaClosePrice, env, SellPrice):
+        reward = 0  
+        def FecharCasoFinal(c=None):
+            global Final
+            Final = True
+            return env.FecharAcabouDados(SellPrice, indice)
+        def IrParaIndiceAcabou(c=None):
+            return jax.lax.cond(indice == ListaClosePrice - 1 ,FecharIndiceAcabou,lambda: 0)
+            
+        def FecharIndiceAcabou(c=None):
+            global Final
+            Final = True
+            return env.FecharAcabouDados(SellPrice, indice)
+        reward = jax.lax.cond(Final==True,FecharCasoFinal,IrParaIndiceAcabou)
+        
+    
+        return Final, reward
 
+    def evaluate(self, randkey, state, act_func, params, ListaClosePrice):
+        
         def cond_func(carry):
-            _, _, _, done, _ = carry
+            _, done, _ = carry
             return ~done
 
         def body_func(carry):
-            obs, env_state, rng, _, tr = carry  # total reward
-            action = act_func(obs, params)
-            next_obs, next_env_state, reward, done, _ = self.step(rng, env_state, action)
-            next_rng, _ = jax.random.split(rng)
-            return next_obs, next_env_state, next_rng, done, tr + reward
+            env_state, _, tr = carry  # total reward
 
-        _, _, _, _, total_reward = jax.lax.while_loop(
-            cond_func,
-            body_func,
-            (init_obs, init_env_state, rng_episode, False, 0.0)
-        )
+            action = act_func(env_state, params) 
+            reward, Final, next_env_state = env.actions(action, ClosePrice)
+            # Convertendo os índices para inteiros concretos usando `int`
+            start_index = self.indice - 200
+            end_index = self.indice
+
+            # Usando dynamic_slice para fatiar o array ClosePrice
+            sliced_close_price = jax.lax.dynamic_slice(ClosePrice, (start_index, ), (end_index, ))
+
+            next_env_state.extend(sliced_close_price)
+            reward1 = 0
+            Final, reward1 = RLEnv.VerificarFinals( 
+                Final,
+                self.indice,
+                lenListaClosePrice,
+                env,
+                ClosePrice,           
+            )
+            reward += reward1
+            self.indice+=1
+            return next_env_state, Final, tr + reward
+
+        for arquivo in ListaClosePrice:
+            ClosePrice=jnp.asarray(arquivo)
+            
+            env = classeshort.AmbientDeTreino(arquivo)
+            init_env_state = env.reset()
+            self.indice = 201
+            lenListaClosePrice = len(ListaClosePrice)
+
+            _, _, total_rewardep = jax.lax.while_loop(
+                cond_func, body_func, (init_env_state, False, 0.0)
+            )
+            total_reward+=total_rewardep
+            jax.debug.print("Fim Arquivo")
 
         return total_reward
 
-    @partial(jax.jit, static_argnums=(0,))
-    def step(self, randkey, env_state, action):
-        return self.env_step(randkey, env_state, action)
-
-    @partial(jax.jit, static_argnums=(0,))
-    def reset(self, randkey):
-        return self.env_reset(randkey)
-
-    def env_step(self, randkey, env_state, action):
-        raise NotImplementedError
-
-    def env_reset(self, randkey):
-        raise NotImplementedError
-
     @property
     def input_shape(self):
-        raise NotImplementedError
+        return [202]
 
     @property
     def output_shape(self):
-        raise NotImplementedError
+        return [3]
 
     def show(self, randkey, state, act_func, params, *args, **kwargs):
         raise NotImplementedError
